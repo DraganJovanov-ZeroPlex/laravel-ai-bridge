@@ -15,6 +15,7 @@ declare(strict_types=1);
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tetrix\AiBridge\Protocol\MessageTypes;
 use Tetrix\AiBridge\Streaming\StreamHandler;
+use Tetrix\AiBridge\WebSocket\MessageHandler;
 
 uses(RefreshDatabase::class);
 
@@ -1096,4 +1097,22 @@ test('a long tail of short results cannot walk the row past a packet limit', fun
     // And the tiny results were kept as they were, not inflated into notices.
     $tiny = collect($blocks)->firstWhere('tool_call_id', 'tiny499');
     expect($tiny['result'])->toBe('ok');
+});
+
+test('the welcome tells the bridge to bound turns by silence', function () {
+    // Shipping the bridge fix alone changes nothing for anyone on the package
+    // default: the server would still send request_timeout 300, and the bridge
+    // honours it as a wall clock — the original bug, intact.
+    //
+    // Built from the REAL welcome, not from a local array rebuilt to match.
+    // The first version of this test assembled its own config and would have
+    // passed if the production response dropped or renamed the field, which is
+    // precisely the failure it exists to catch.
+    $handler = app(MessageHandler::class);
+    $welcome = (new ReflectionClass($handler))
+        ->getMethod('buildWelcomeResponse')
+        ->invoke($handler, 'conn-1', 'user-1');
+
+    expect($welcome['config']['silence_timeout'])->toBe(900)
+        ->and($welcome['config']['request_timeout'])->toBeGreaterThan(3600);
 });
