@@ -114,6 +114,10 @@ final class ArrayStreamStore implements StreamStoreContract
             return;
         }
         $this->turns[$requestId]['status'] = $status;
+        // The stop belongs to the turn that was stopped, and that turn is over.
+        // See the Redis driver, where a request_id outliving its turn is what
+        // makes this matter.
+        $this->turns[$requestId]['aborted'] = false;
     }
 
     public function cleanup(string $requestId): void

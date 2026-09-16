@@ -41,16 +41,6 @@ final class RedisStreamStore implements StreamStoreContract
         $created = (bool) $conn->setnx($this->key($requestId, 'status'), 'streaming');
         if ($created) {
             $conn->expire($this->key($requestId, 'status'), $this->streamingTtl);
-
-            // A new turn does not inherit the last one's stop. Only cleanup()
-            // removed this key, so a reused request_id — which the relay path
-            // accepts from its caller, and which lost-session recovery re-issues
-            // on purpose — started life already aborted. It used to die at its
-            // first stream event; now the heartbeat can stop it before it has
-            // produced a single token, which looks like a turn that refused to
-            // run. Only on the branch that created the turn, so a second
-            // start() for a turn somebody has since stopped does not un-stop it.
-            $conn->del($this->key($requestId, 'abort'));
         }
 
         $conn->set(
@@ -153,6 +143,22 @@ final class RedisStreamStore implements StreamStoreContract
         $conn->set($this->key($requestId, 'status'), $status, 'EX', $this->completedTtl);
         $conn->expire($this->key($requestId, 'events'), $this->completedTtl);
         $conn->expire($this->key($requestId, 'meta'), $this->completedTtl);
+
+        // The stop belongs to the turn that was stopped, and that turn is over.
+        //
+        // Only cleanup() removed this key, and nothing calls cleanup() — so a
+        // reused request_id (the relay path takes one from its caller) began
+        // life already aborted, and died at its first stream event. Now that the
+        // heartbeat polls too, it would die before producing a single token,
+        // which reads as a turn that refused to run.
+        //
+        // Here rather than in start(), for two reasons. start() cannot tell a
+        // reused id from a retried start: `complete()` rewrites the status key,
+        // so the SETNX that would have gated it reports "already exists" for
+        // exactly the reuse this is meant to catch. And clearing on start would
+        // discard an abort that arrived BEFORE the turn started, which the
+        // contract explicitly allows for a caller racing its own request.
+        $conn->del($this->key($requestId, 'abort'));
     }
 
     public function cleanup(string $requestId): void

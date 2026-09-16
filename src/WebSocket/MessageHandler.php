@@ -467,10 +467,12 @@ class MessageHandler
      */
     private function handlePing(string $connectionId, array $message): ?array
     {
-        Log::debug('AI Bridge: ping received', ['connection_id' => $connectionId]);
-
-        // The pong is built BEFORE the poll, and the poll cannot stop it going
-        // out. A throw in here would otherwise be caught by the socket handler,
+        // FIRST STATEMENT, ahead of the log line as well as the poll. An
+        // unwritable log destination throws from Log::debug like anything else,
+        // and the cost of a dropped pong is the same whatever threw.
+        //
+        // The poll below cannot stop it going out either. A throw there would
+        // otherwise be caught by the socket handler,
         // which returns without sending a response — and a bridge that misses a
         // pong by 10 seconds declares the connection dead and reconnects, which
         // replaces the connection and fails EVERY in-flight turn for that user.
@@ -482,6 +484,8 @@ class MessageHandler
             'timestamp' => $message['timestamp'] ?? time(),
         ];
 
+        Log::debug('AI Bridge: ping received', ['connection_id' => $connectionId]);
+
         // The heartbeat is the only thing a turn that has gone quiet still
         // produces, so it is where a stop has to be noticed.
         //
@@ -491,14 +495,7 @@ class MessageHandler
         // is precisely when somebody presses stop, ignored the button
         // completely. The endpoint returned "abort_requested", the chat moved
         // on, and the CLI ran to the end on the operator's machine.
-        try {
-            $this->pollAbortsForConnection($connectionId);
-        } catch (\Throwable $e) {
-            BridgeLog::warning('failed to poll abort flags on the heartbeat', [
-                'connection_id' => $connectionId,
-                'error' => $e->getMessage(),
-            ]);
-        }
+        $this->pollAbortsForConnection($connectionId);
 
         return $pong;
     }
@@ -649,12 +646,26 @@ class MessageHandler
         }
 
         foreach ($this->connectionManager->pendingRequestIdsForUser($userId) as $requestId) {
-            $handler = $this->connectionManager->getPendingRequest($requestId);
-            if ($handler === null) {
-                continue;
-            }
-            if ($this->isAbortRequested($requestId)) {
-                $this->handleUserAbort($connectionId, $requestId, $handler);
+            // PER TURN, not around the loop. One handler that throws
+            // deterministically would otherwise skip every request after it, on
+            // every heartbeat — and iteration follows insertion order, so it
+            // would be the same turns every time, never stopped. That is the
+            // "the stop does nothing" fault this poll exists to fix, rebuilt in
+            // a corner of the fix.
+            try {
+                $handler = $this->connectionManager->getPendingRequest($requestId);
+                if ($handler === null) {
+                    continue;
+                }
+                if ($this->isAbortRequested($requestId)) {
+                    $this->handleUserAbort($connectionId, $requestId, $handler);
+                }
+            } catch (\Throwable $e) {
+                BridgeLog::warning('failed to stop a turn on the heartbeat', [
+                    'connection_id' => $connectionId,
+                    'request_id' => $requestId,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
     }
