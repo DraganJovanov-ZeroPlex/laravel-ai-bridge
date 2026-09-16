@@ -469,6 +469,19 @@ class MessageHandler
     {
         Log::debug('AI Bridge: ping received', ['connection_id' => $connectionId]);
 
+        // The pong is built BEFORE the poll, and the poll cannot stop it going
+        // out. A throw in here would otherwise be caught by the socket handler,
+        // which returns without sending a response — and a bridge that misses a
+        // pong by 10 seconds declares the connection dead and reconnects, which
+        // replaces the connection and fails EVERY in-flight turn for that user.
+        // A deterministic throw would do that on every heartbeat, forever. The
+        // liveness answer does not depend on this work, so it does not wait for
+        // it.
+        $pong = [
+            'type' => MessageTypes::PONG,
+            'timestamp' => $message['timestamp'] ?? time(),
+        ];
+
         // The heartbeat is the only thing a turn that has gone quiet still
         // produces, so it is where a stop has to be noticed.
         //
@@ -478,12 +491,16 @@ class MessageHandler
         // is precisely when somebody presses stop, ignored the button
         // completely. The endpoint returned "abort_requested", the chat moved
         // on, and the CLI ran to the end on the operator's machine.
-        $this->pollAbortsForConnection($connectionId);
+        try {
+            $this->pollAbortsForConnection($connectionId);
+        } catch (\Throwable $e) {
+            BridgeLog::warning('failed to poll abort flags on the heartbeat', [
+                'connection_id' => $connectionId,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
-        return [
-            'type' => MessageTypes::PONG,
-            'timestamp' => $message['timestamp'] ?? time(),
-        ];
+        return $pong;
     }
 
     /**
@@ -621,7 +638,13 @@ class MessageHandler
     private function pollAbortsForConnection(string $connectionId): void
     {
         $userId = $this->connectionManager->getUserIdByConnectionId($connectionId);
-        if ($userId === null) {
+        // '' as well as null. A request registered without an owner — the
+        // default of registerPendingRequest() — would otherwise be matched by
+        // ANY connection whose own user id is empty, which is the one case
+        // verifySenderOwnsRequest() fails closed on. Everywhere else this path
+        // and that check agree; this is the only way they could disagree, and
+        // it disagrees in the permissive direction.
+        if ($userId === null || $userId === '') {
             return;
         }
 

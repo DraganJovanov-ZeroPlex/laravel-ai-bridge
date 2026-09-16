@@ -97,6 +97,23 @@ test('ArrayStreamStore — setAbort works before start() (race-aborting caller)'
     expect($store->isAborted('r-early'))->toBeTrue();
 });
 
+test('a new turn does not inherit the last one abort flag', function () {
+    // Contract, not driver trivia: request ids get reused — the relay path
+    // accepts one from its caller, and lost-session recovery re-issues on the
+    // same id on purpose. A turn that starts life already aborted is stopped
+    // before it has produced a token, which reads as a turn that refused to
+    // run. The Redis driver only cleared this key in cleanup(); it now clears
+    // it when start() creates the turn, matching this.
+    $store = new ArrayStreamStore();
+    $store->start('r-reused');
+    $store->setAbort('r-reused');
+    $store->cleanup('r-reused');
+
+    $store->start('r-reused');
+
+    expect($store->isAborted('r-reused'))->toBeFalse();
+});
+
 test('ArrayStreamStore — not_found status for unknown turn', function () {
     $store = new ArrayStreamStore();
     $status = $store->status('nope');

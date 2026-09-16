@@ -41,6 +41,16 @@ final class RedisStreamStore implements StreamStoreContract
         $created = (bool) $conn->setnx($this->key($requestId, 'status'), 'streaming');
         if ($created) {
             $conn->expire($this->key($requestId, 'status'), $this->streamingTtl);
+
+            // A new turn does not inherit the last one's stop. Only cleanup()
+            // removed this key, so a reused request_id — which the relay path
+            // accepts from its caller, and which lost-session recovery re-issues
+            // on purpose — started life already aborted. It used to die at its
+            // first stream event; now the heartbeat can stop it before it has
+            // produced a single token, which looks like a turn that refused to
+            // run. Only on the branch that created the turn, so a second
+            // start() for a turn somebody has since stopped does not un-stop it.
+            $conn->del($this->key($requestId, 'abort'));
         }
 
         $conn->set(
