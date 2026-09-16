@@ -5,10 +5,12 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Tetrix\AiBridge\Auth\TokenManager;
+use Tetrix\AiBridge\Contracts\StreamStoreContract;
 use Tetrix\AiBridge\Contracts\StreamableProvider;
 use Tetrix\AiBridge\Enums\ProviderMode;
 use Tetrix\AiBridge\Protocol\MessageTypes;
 use Tetrix\AiBridge\Protocol\StreamEvent;
+use Tetrix\AiBridge\Streaming\Drivers\ArrayStreamStore;
 use Tetrix\AiBridge\Streaming\StreamHandler;
 use Tetrix\AiBridge\Tests\TestCase;
 use Tetrix\AiBridge\Tools\ToolRegistry;
@@ -519,6 +521,70 @@ test('cancelled for a turn already cleaned up is not treated as an attack', func
     ]));
 
     Log::shouldNotHaveReceived('warning');
+});
+
+test('a stop is noticed on the heartbeat, not only when the turn says something', function () {
+    // The abort flag used to be polled in exactly one place: as each stream
+    // event arrived. So it was read constantly while the model was writing and
+    // never while it was not — and a turn three minutes into a build, which is
+    // when somebody actually presses stop, ignored the button completely.
+    $store = new ArrayStreamStore();
+    app()->instance(StreamStoreContract::class, $store);
+
+    $sent = [];
+    $this->manager->setSendCallback(function (mixed $conn, array $payload) use (&$sent) {
+        $sent[] = $payload;
+
+        return true;
+    });
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $handler = makeHandler($this->manager);
+    $cancelled = false;
+    $handler->onCancelled(function () use (&$cancelled) {
+        $cancelled = true;
+    });
+    $this->manager->registerPendingRequest('req-quiet', $handler, 'user-1');
+    $store->setAbort('req-quiet');
+
+    // The heartbeat: the only thing a silent turn still produces.
+    $response = $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::PING,
+        'timestamp' => 123,
+    ]));
+
+    expect($response['type'])->toBe(MessageTypes::PONG)
+        ->and($cancelled)->toBeTrue()
+        ->and(collect($sent)->firstWhere('type', MessageTypes::CANCEL))->not->toBeNull();
+});
+
+test('a heartbeat does not disturb a turn nobody stopped', function () {
+    $store = new ArrayStreamStore();
+    app()->instance(StreamStoreContract::class, $store);
+
+    $sent = [];
+    $this->manager->setSendCallback(function (mixed $conn, array $payload) use (&$sent) {
+        $sent[] = $payload;
+
+        return true;
+    });
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $handler = makeHandler($this->manager);
+    $cancelled = false;
+    $handler->onCancelled(function () use (&$cancelled) {
+        $cancelled = true;
+    });
+    $this->manager->registerPendingRequest('req-running', $handler, 'user-1');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::PING,
+        'timestamp' => 123,
+    ]));
+
+    expect($cancelled)->toBeFalse()
+        ->and($sent)->toBeEmpty()
+        ->and($this->manager->getPendingRequest('req-running'))->not->toBeNull();
 });
 
 // --- Protocol version mismatch (ARCH-005) ---

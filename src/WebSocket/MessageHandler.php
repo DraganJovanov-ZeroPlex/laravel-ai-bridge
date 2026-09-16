@@ -469,6 +469,17 @@ class MessageHandler
     {
         Log::debug('AI Bridge: ping received', ['connection_id' => $connectionId]);
 
+        // The heartbeat is the only thing a turn that has gone quiet still
+        // produces, so it is where a stop has to be noticed.
+        //
+        // The abort flag was polled in exactly one place: as each stream event
+        // arrived. That reads the flag often while the model is writing, and
+        // NEVER while it is not -- so a turn three minutes into a build, which
+        // is precisely when somebody presses stop, ignored the button
+        // completely. The endpoint returned "abort_requested", the chat moved
+        // on, and the CLI ran to the end on the operator's machine.
+        $this->pollAbortsForConnection($connectionId);
+
         return [
             'type' => MessageTypes::PONG,
             'timestamp' => $message['timestamp'] ?? time(),
@@ -597,6 +608,31 @@ class MessageHandler
             ]);
 
             return false;
+        }
+    }
+
+    /**
+     * Stop any turn on this connection that somebody has asked to stop.
+     *
+     * Bounded by the heartbeat interval (30s by default), which is the price of
+     * not running a timer in the WebSocket process. A turn that IS producing
+     * events is still stopped at the next one, as it always was.
+     */
+    private function pollAbortsForConnection(string $connectionId): void
+    {
+        $userId = $this->connectionManager->getUserIdByConnectionId($connectionId);
+        if ($userId === null) {
+            return;
+        }
+
+        foreach ($this->connectionManager->pendingRequestIdsForUser($userId) as $requestId) {
+            $handler = $this->connectionManager->getPendingRequest($requestId);
+            if ($handler === null) {
+                continue;
+            }
+            if ($this->isAbortRequested($requestId)) {
+                $this->handleUserAbort($connectionId, $requestId, $handler);
+            }
         }
     }
 
@@ -1145,15 +1181,24 @@ class MessageHandler
     {
         $requestId = $message['request_id'] ?? '';
 
-        // A `cancelled` for a request nobody is waiting on is the ORDINARY
+        // A `cancelled` for a request nobody is waiting on is an ORDINARY
         // ending, not an attack: handleUserAbort() terminates the turn locally
-        // and clears the pending request the moment it sees the abort flag, so
-        // the bridge's reply — which waits for the CLI to actually stop —
-        // always arrives after that. Logging it as a security event would put a
-        // warning in the log on every single cancelled turn, which is how a
-        // real one stops being noticed.
-        if ($this->connectionManager->getPendingRequestUserId($requestId) === null) {
-            BridgeLog::info('cancelled for a turn that has already been cleaned up', [
+        // and clears the pending request the moment it sees the abort flag,
+        // while the bridge's reply waits for the CLI to actually stop — so on
+        // that path the reply arrives after the request is gone. (The other
+        // path, BridgeStream::cancel(), deliberately keeps the request open for
+        // this reply, and still reaches the ownership check below.) Logging the
+        // first as a security event would put a warning in the log on every
+        // cancelled turn, which is how a real one stops being noticed.
+        //
+        // Asked with getPendingRequest(), like every other terminal handler
+        // here. getPendingRequestUserId() answers a different question than it
+        // appears to: it ends in `?:`, so a request registered with a falsy
+        // owner ('' or '0') reads as absent, and this would then say a live
+        // turn had "already been cleaned up".
+        if ($this->connectionManager->getPendingRequest($requestId) === null) {
+            Log::info('AI Bridge: cancelled for a turn that has already been cleaned up', [
+                'connection_id' => $connectionId,
                 'request_id' => $requestId,
             ]);
 

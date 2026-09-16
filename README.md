@@ -839,7 +839,7 @@ Eloquent `deleting` event on `Tetrix\AiBridge\Models\Connection`.
 | `POST /ai-bridge/conversations/{id}/stream` | Start a turn — returns `{request_id}`; the browser tails `/streams/{rid}/events` |
 | `GET /ai-bridge/streams/{rid}/status` | Status snapshot of an in-flight or recently-completed turn |
 | `GET /ai-bridge/streams/{rid}/events` | SSE tail of the per-turn event buffer; resumes by `Last-Event-ID` |
-| `POST /ai-bridge/streams/{rid}/abort` | Cancel an in-flight turn (serve process observes the flag, sends `cancel` to the CLI). **Needs `@tetrixdev/ai-bridge` 0.11.0 or newer to actually stop the CLI** — older bridges ignore the message and the turn runs to its end on the operator's machine, even though the chat has already moved on |
+| `POST /ai-bridge/streams/{rid}/abort` | Cancel an in-flight turn. Sets a flag; the WebSocket process acts on it at the turn's next event, or at the next heartbeat when the turn has gone quiet — so a stop takes effect within the heartbeat interval (30s by default) at worst. **Stopping the CLI itself needs `@tetrixdev/ai-bridge` 0.11.0 or newer**: older bridges ignore `cancel`, so the chat ends the turn but the CLI runs on to the end on the operator's machine |
 | `GET /ai-bridge/connections` | List connections with their advertised providers/models + live `connected` flag |
 | `POST /ai-bridge/connections` | Register a CLI bridge or BYOK connection |
 | `PATCH /ai-bridge/connections/{id}` | Rename a connection |
