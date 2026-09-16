@@ -37,6 +37,11 @@ final class BufferingSink
     private const PUBLIC_DONE_META = [
         'model', 'provider_version', 'stop_reason', 'cost_usd',
         'duration_ms', 'duration_api_ms', 'num_turns', 'permission_denials',
+        // Why the turn ended, in the CLI's own words. A turn that arrives with
+        // no text at all is the case this earns its place for: `stop_reason` is
+        // null on several of those paths, so without it the only thing a chat
+        // can say about an empty answer is nothing.
+        'subtype',
     ];
 
     /**

@@ -1059,6 +1059,11 @@ for the size bounds that apply on the way in and on the way to the database.
 beyond the token counts — the model that actually ran, the CLI version, the
 stop reason, cost and durations, and any tool calls the operator refused.
 
+`subtype` is worth reading when an answer arrives empty: it is how the CLI
+itself classified the ending (`success`, `error_during_execution`,
+`error_max_turns`), and `stop_reason` is null on several of those paths, so
+without it a blank message is all your UI has to go on.
+
 ```php
 $stream->onDone(function (?array $usage, array $meta = []) {
     // $usage includes the CACHE counters, which dominate a resumed
