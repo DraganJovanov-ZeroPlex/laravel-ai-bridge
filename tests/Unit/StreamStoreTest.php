@@ -97,6 +97,36 @@ test('ArrayStreamStore — setAbort works before start() (race-aborting caller)'
     expect($store->isAborted('r-early'))->toBeTrue();
 });
 
+test('a stop does not outlive the turn it stopped', function () {
+    // Contract, not driver trivia: request ids get reused — the relay path
+    // takes one from its caller. A turn that starts life already aborted is
+    // stopped before it has produced a token, which reads as a turn that
+    // refused to run rather than one somebody stopped.
+    //
+    // NO cleanup() here on purpose. cleanup() has always cleared the flag and
+    // nothing in the package calls it; asserting through it would be asserting
+    // code this change does not touch.
+    $store = new ArrayStreamStore();
+    $store->start('r-reused');
+    $store->setAbort('r-reused');
+    $store->complete('r-reused', 'cancelled');
+
+    expect($store->isAborted('r-reused'))->toBeFalse();
+});
+
+test('a stop that arrives before the turn starts survives the start', function () {
+    // The other half, and the reason the clearing lives in complete() rather
+    // than start(): a caller racing its own request may abort before the turn
+    // exists, and start() must not discard that. Both drivers have to answer
+    // this the same way — only one of them runs in production.
+    $store = new ArrayStreamStore();
+    $store->setAbort('r-raced');
+
+    $store->start('r-raced');
+
+    expect($store->isAborted('r-raced'))->toBeTrue();
+});
+
 test('ArrayStreamStore — not_found status for unknown turn', function () {
     $store = new ArrayStreamStore();
     $status = $store->status('nope');

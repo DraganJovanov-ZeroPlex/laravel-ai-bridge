@@ -193,3 +193,22 @@ test('a browser sees the documented turn metadata and not the session handle', f
         ->and($done['data'])->not->toHaveKey('cli_session_id')
         ->and($done['data'])->not->toHaveKey('some_future_field');
 });
+
+test('a browser is told why a turn that produced nothing ended', function () {
+    // The one thing a chat can show about an empty answer. `stop_reason` is
+    // null on several of the paths that produce one, so with `subtype` filtered
+    // out the UI had a blank message and no way to say anything about it.
+    $store = new ArrayStreamStore();
+    $handler = new StreamHandler(fakeBufferProvider(), 'rid-empty');
+    BufferingSink::attach($handler, $store);
+
+    $handler->dispatchDone(null, [
+        'subtype' => 'error_max_turns',
+        'stop_reason' => null,
+        'num_turns' => 9,
+    ]);
+
+    $done = collect($store->range('rid-empty'))->firstWhere('event', 'done');
+
+    expect($done['data']['subtype'])->toBe('error_max_turns');
+});

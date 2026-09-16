@@ -143,6 +143,22 @@ final class RedisStreamStore implements StreamStoreContract
         $conn->set($this->key($requestId, 'status'), $status, 'EX', $this->completedTtl);
         $conn->expire($this->key($requestId, 'events'), $this->completedTtl);
         $conn->expire($this->key($requestId, 'meta'), $this->completedTtl);
+
+        // The stop belongs to the turn that was stopped, and that turn is over.
+        //
+        // Only cleanup() removed this key, and nothing calls cleanup() — so a
+        // reused request_id (the relay path takes one from its caller) began
+        // life already aborted, and died at its first stream event. Now that the
+        // heartbeat polls too, it would die before producing a single token,
+        // which reads as a turn that refused to run.
+        //
+        // Here rather than in start(), for two reasons. start() cannot tell a
+        // reused id from a retried start: `complete()` rewrites the status key,
+        // so the SETNX that would have gated it reports "already exists" for
+        // exactly the reuse this is meant to catch. And clearing on start would
+        // discard an abort that arrived BEFORE the turn started, which the
+        // contract explicitly allows for a caller racing its own request.
+        $conn->del($this->key($requestId, 'abort'));
     }
 
     public function cleanup(string $requestId): void

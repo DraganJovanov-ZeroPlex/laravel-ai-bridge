@@ -3,11 +3,14 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Tetrix\AiBridge\Auth\TokenManager;
+use Tetrix\AiBridge\Contracts\StreamStoreContract;
 use Tetrix\AiBridge\Contracts\StreamableProvider;
 use Tetrix\AiBridge\Enums\ProviderMode;
 use Tetrix\AiBridge\Protocol\MessageTypes;
 use Tetrix\AiBridge\Protocol\StreamEvent;
+use Tetrix\AiBridge\Streaming\Drivers\ArrayStreamStore;
 use Tetrix\AiBridge\Streaming\StreamHandler;
 use Tetrix\AiBridge\Tests\TestCase;
 use Tetrix\AiBridge\Tools\ToolRegistry;
@@ -501,6 +504,149 @@ test('cancelled message from unregistered connection is discarded (SEC-001 fail-
 
     expect($cancelledFired)->toBeFalse();
     expect($this->manager->getPendingRequest('req-1'))->not->toBeNull();
+});
+
+test('cancelled for a turn already cleaned up is not treated as an attack', function () {
+    // The ORDINARY ending, now that the bridge answers a cancel at all: the
+    // abort path terminates the turn locally and clears the pending request the
+    // moment it sees the flag, and the bridge's reply waits for the CLI to
+    // actually stop — so it always lands after. A warning here would fire on
+    // every cancelled turn, which is how a real warning stops being read.
+    Log::spy();
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::CANCELLED,
+        'request_id' => 'req-long-gone',
+    ]));
+
+    Log::shouldNotHaveReceived('warning');
+});
+
+test('a stop is noticed on the heartbeat, not only when the turn says something', function () {
+    // The abort flag used to be polled in exactly one place: as each stream
+    // event arrived. So it was read constantly while the model was writing and
+    // never while it was not — and a turn three minutes into a build, which is
+    // when somebody actually presses stop, ignored the button completely.
+    $store = new ArrayStreamStore();
+    app()->instance(StreamStoreContract::class, $store);
+
+    $sent = [];
+    $this->manager->setSendCallback(function (mixed $conn, array $payload) use (&$sent) {
+        $sent[] = $payload;
+
+        return true;
+    });
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $handler = makeHandler($this->manager);
+    $cancelled = false;
+    $handler->onCancelled(function () use (&$cancelled) {
+        $cancelled = true;
+    });
+    $this->manager->registerPendingRequest('req-quiet', $handler, 'user-1');
+    $store->setAbort('req-quiet');
+
+    // The heartbeat: the only thing a silent turn still produces.
+    $response = $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::PING,
+        'timestamp' => 123,
+    ]));
+
+    expect($response['type'])->toBe(MessageTypes::PONG)
+        ->and($cancelled)->toBeTrue()
+        ->and(collect($sent)->firstWhere('type', MessageTypes::CANCEL))->not->toBeNull();
+});
+
+test('a heartbeat does not disturb a turn nobody stopped', function () {
+    $store = new ArrayStreamStore();
+    app()->instance(StreamStoreContract::class, $store);
+
+    $sent = [];
+    $this->manager->setSendCallback(function (mixed $conn, array $payload) use (&$sent) {
+        $sent[] = $payload;
+
+        return true;
+    });
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $handler = makeHandler($this->manager);
+    $cancelled = false;
+    $handler->onCancelled(function () use (&$cancelled) {
+        $cancelled = true;
+    });
+    $this->manager->registerPendingRequest('req-running', $handler, 'user-1');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::PING,
+        'timestamp' => 123,
+    ]));
+
+    expect($cancelled)->toBeFalse()
+        ->and($sent)->toBeEmpty()
+        ->and($this->manager->getPendingRequest('req-running'))->not->toBeNull();
+});
+
+test('a heartbeat only ever stops the sender own turns (SEC-001)', function () {
+    // The property the per-user filter exists for, and nothing else asserts it:
+    // drop the filter and one user's heartbeat becomes a kill switch for every
+    // in-flight turn on the server. Before this poll existed, ownership was
+    // checked on the stream event that carried us here.
+    $store = new ArrayStreamStore();
+    app()->instance(StreamStoreContract::class, $store);
+
+    $this->manager->addConnection('user-1', 'conn-1');
+    $this->manager->addConnection('user-2', 'conn-2');
+
+    $mine = makeHandler($this->manager);
+    $theirs = makeHandler($this->manager);
+    $minesCancelled = false;
+    $theirsCancelled = false;
+    $mine->onCancelled(function () use (&$minesCancelled) {
+        $minesCancelled = true;
+    });
+    $theirs->onCancelled(function () use (&$theirsCancelled) {
+        $theirsCancelled = true;
+    });
+    $this->manager->registerPendingRequest('req-mine', $mine, 'user-1');
+    $this->manager->registerPendingRequest('req-theirs', $theirs, 'user-2');
+
+    // Both turns are stopped, but only user-1 is sending this heartbeat.
+    $store->setAbort('req-mine');
+    $store->setAbort('req-theirs');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::PING,
+        'timestamp' => 123,
+    ]));
+
+    expect($minesCancelled)->toBeTrue()
+        ->and($theirsCancelled)->toBeFalse()
+        ->and($this->manager->getPendingRequest('req-theirs'))->not->toBeNull();
+});
+
+test('a heartbeat from a connection with no user id touches nothing', function () {
+    // '' is not a user. A request registered without an owner is exactly what
+    // the ownership check fails closed on, so this path must not match it.
+    $store = new ArrayStreamStore();
+    app()->instance(StreamStoreContract::class, $store);
+
+    $this->manager->addConnection('', 'conn-anon');
+
+    $handler = makeHandler($this->manager);
+    $cancelled = false;
+    $handler->onCancelled(function () use (&$cancelled) {
+        $cancelled = true;
+    });
+    $this->manager->registerPendingRequest('req-unowned', $handler);
+    $store->setAbort('req-unowned');
+
+    $this->messageHandler->handleMessage('conn-anon', null, json_encode([
+        'type' => MessageTypes::PING,
+        'timestamp' => 123,
+    ]));
+
+    expect($cancelled)->toBeFalse();
 });
 
 // --- Protocol version mismatch (ARCH-005) ---

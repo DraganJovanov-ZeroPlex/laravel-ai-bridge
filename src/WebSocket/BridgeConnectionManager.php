@@ -434,6 +434,24 @@ class BridgeConnectionManager
     }
 
     /**
+     * The ids of every pending request a given user owns.
+     *
+     * Used to answer "has anything this connection is running been stopped?"
+     * without waiting for that turn to produce an event of its own.
+     *
+     * @return string[]
+     */
+    public function pendingRequestIdsForUser(int|string $userId): array
+    {
+        $needle = (string) $userId;
+
+        return array_keys(array_filter(
+            $this->pendingRequests,
+            static fn (array $entry): bool => (string) $entry['user_id'] === $needle,
+        ));
+    }
+
+    /**
      * Get all active connection user IDs.
      *
      * @return string[]
