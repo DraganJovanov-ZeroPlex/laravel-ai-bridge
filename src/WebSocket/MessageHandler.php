@@ -1145,6 +1145,21 @@ class MessageHandler
     {
         $requestId = $message['request_id'] ?? '';
 
+        // A `cancelled` for a request nobody is waiting on is the ORDINARY
+        // ending, not an attack: handleUserAbort() terminates the turn locally
+        // and clears the pending request the moment it sees the abort flag, so
+        // the bridge's reply — which waits for the CLI to actually stop —
+        // always arrives after that. Logging it as a security event would put a
+        // warning in the log on every single cancelled turn, which is how a
+        // real one stops being noticed.
+        if ($this->connectionManager->getPendingRequestUserId($requestId) === null) {
+            BridgeLog::info('cancelled for a turn that has already been cleaned up', [
+                'request_id' => $requestId,
+            ]);
+
+            return null;
+        }
+
         // SEC: Verify the sender owns this request before dispatching cancellation.
         // Mirrors the check in handleDoneFromStream() and handleErrorFromStream().
         if (! $this->verifySenderOwnsRequest($connectionId, $requestId)) {

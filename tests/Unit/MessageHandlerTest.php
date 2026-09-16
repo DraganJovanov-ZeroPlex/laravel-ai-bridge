@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Tetrix\AiBridge\Auth\TokenManager;
 use Tetrix\AiBridge\Contracts\StreamableProvider;
 use Tetrix\AiBridge\Enums\ProviderMode;
@@ -501,6 +502,23 @@ test('cancelled message from unregistered connection is discarded (SEC-001 fail-
 
     expect($cancelledFired)->toBeFalse();
     expect($this->manager->getPendingRequest('req-1'))->not->toBeNull();
+});
+
+test('cancelled for a turn already cleaned up is not treated as an attack', function () {
+    // The ORDINARY ending, now that the bridge answers a cancel at all: the
+    // abort path terminates the turn locally and clears the pending request the
+    // moment it sees the flag, and the bridge's reply waits for the CLI to
+    // actually stop — so it always lands after. A warning here would fire on
+    // every cancelled turn, which is how a real warning stops being read.
+    Log::spy();
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::CANCELLED,
+        'request_id' => 'req-long-gone',
+    ]));
+
+    Log::shouldNotHaveReceived('warning');
 });
 
 // --- Protocol version mismatch (ARCH-005) ---
