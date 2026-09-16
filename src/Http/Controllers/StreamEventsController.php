@@ -167,6 +167,18 @@ class StreamEventsController extends Controller
             return response()->json(['error' => 'forbidden'], 403);
         }
 
+        // A turn that has already ended cannot be stopped, and saying otherwise
+        // costs more than a misleading 200. The stop flag is cleared when a turn
+        // completes; arming it again afterwards leaves one nothing will clear,
+        // and a request_id outlives its turn — so the next turn to use that id
+        // would be stopped before it had produced a token.
+        if ($status['status'] !== 'streaming') {
+            return response()->json([
+                'status' => $status['status'],
+                'request_id' => $requestId,
+            ]);
+        }
+
         $this->store->setAbort($requestId);
 
         return response()->json(['status' => 'abort_requested', 'request_id' => $requestId]);

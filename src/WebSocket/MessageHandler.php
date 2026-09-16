@@ -495,7 +495,18 @@ class MessageHandler
         // is precisely when somebody presses stop, ignored the button
         // completely. The endpoint returned "abort_requested", the chat moved
         // on, and the CLI ran to the end on the operator's machine.
-        $this->pollAbortsForConnection($connectionId);
+        // Belt as well as braces: each turn is guarded individually inside, so
+        // one bad one cannot starve the others — and this outer catch makes the
+        // promise above true for the whole call rather than for the loop body,
+        // including the lookups before the loop starts.
+        try {
+            $this->pollAbortsForConnection($connectionId);
+        } catch (\Throwable $e) {
+            BridgeLog::warning('failed to poll abort flags on the heartbeat', [
+                'connection_id' => $connectionId,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         return $pong;
     }

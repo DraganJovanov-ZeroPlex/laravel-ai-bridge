@@ -86,6 +86,20 @@ test('abort() sets the buffer flag and returns 200', function () {
     expect($this->store->isAborted('rid-3'))->toBeTrue();
 });
 
+test('abort() does not arm a stop on a turn that has already ended', function () {
+    // The stop flag is cleared when a turn completes. Arming it again afterwards
+    // leaves one nothing will ever clear — and a request_id outlives its turn,
+    // so the next turn to use that id would be stopped before it had produced a
+    // token. A second click on a stop button is an ordinary thing to do.
+    $this->store->start('rid-done', ['conversation_id' => (string) $this->conversation->id]);
+    $this->store->complete('rid-done', 'completed');
+
+    $res = $this->controller->abort(Request::create('/'), 'rid-done');
+
+    expect($res->getStatusCode())->toBe(200)
+        ->and($this->store->isAborted('rid-done'))->toBeFalse();
+});
+
 test('abort() returns 404 for unknown request_id', function () {
     $res = $this->controller->abort(Request::create('/'), 'nope');
     expect($res->getStatusCode())->toBe(404);
