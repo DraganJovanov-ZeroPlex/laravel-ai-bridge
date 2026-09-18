@@ -1120,3 +1120,68 @@ test('welcome response normalises unrecognised cli_isolation values back to "iso
     // Typos / surprises default-safe, not default-leaky.
     expect($response['cli_isolation'])->toBe('isolated');
 });
+
+// --- ai_request_ack: the bridge's session defaults (bridge 0.12.0+) ---
+
+test('a bridge that dropped env keys says so, and the server does not keep it to itself', function () {
+    // The whole reason the bridge echoes what it resolved: so a disagreement
+    // about what this protocol contains surfaces HERE, on the turn it
+    // happened, rather than being inferred from the assistant behaving oddly
+    // three turns later. Nothing else on this side ever mentions it.
+    Log::spy();
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::AI_REQUEST_ACK,
+        'request_id' => 'req-1',
+        'cli_session_id' => null,
+        'bridge_session' => [
+            'prompt_mode' => 'default',
+            'prompt_server_text' => false,
+            'env_overridden' => [],
+            'env_rejected' => ['ANTHROPIC_BASE_URL'],
+        ],
+    ]));
+
+    Log::shouldHaveReceived('warning')
+        ->withArgs(fn (string $message, array $context) => str_contains($message, 'dropped env keys')
+            && $context['env_rejected'] === ['ANTHROPIC_BASE_URL'])
+        ->once();
+});
+
+test('a clean resolution is not a warning', function () {
+    // A warning on every ordinary turn is how a real warning stops being read.
+    Log::spy();
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::AI_REQUEST_ACK,
+        'request_id' => 'req-1',
+        'cli_session_id' => null,
+        'bridge_session' => [
+            'prompt_mode' => 'append',
+            'prompt_server_text' => true,
+            'env_overridden' => ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'],
+            'env_rejected' => [],
+        ],
+    ]));
+
+    Log::shouldNotHaveReceived('warning');
+});
+
+test('an older bridge omitting the field is not treated as a bridge that applied nothing', function () {
+    // Absence means UNKNOWN. A bridge before 0.12.0 sends no bridge_session at
+    // all, and reading that as "no defaults were applied" is the one conclusion
+    // that is never safe to draw from silence.
+    Log::spy();
+    $this->manager->addConnection('user-1', 'conn-1');
+
+    $response = $this->messageHandler->handleMessage('conn-1', null, json_encode([
+        'type' => MessageTypes::AI_REQUEST_ACK,
+        'request_id' => 'req-1',
+        'cli_session_id' => 'sess-abc',
+    ]));
+
+    expect($response)->toBeNull();
+    Log::shouldNotHaveReceived('warning');
+});

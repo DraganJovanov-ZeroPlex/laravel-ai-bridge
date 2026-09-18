@@ -525,6 +525,42 @@ class MessageHandler
             'cli_session_id' => $cliSessionId,
         ]);
 
+        // What the bridge resolved for this turn's session defaults — the
+        // prompt mode it applied, and which environment keys it took or
+        // dropped. The field exists so a server can ASSERT it got what it
+        // asked for rather than inferring it from the assistant's behaviour
+        // several turns later, and a value nobody ever reads asserts nothing.
+        //
+        // Absent from a bridge older than 0.12.0, which is why this is a
+        // separate line rather than three more keys on the one above: absence
+        // means UNKNOWN, and a log entry reading `prompt_mode: null` on every
+        // turn would read as "the bridge applied nothing" — the one conclusion
+        // that is never safe to draw from silence.
+        $session = $message['bridge_session'] ?? null;
+        if (is_array($session)) {
+            $rejected = is_array($session['env_rejected'] ?? null) ? $session['env_rejected'] : [];
+
+            // A rejected key is the server and the bridge disagreeing about
+            // what this protocol contains — normally version skew, and the
+            // turn still ran. Worth a warning rather than a debug line,
+            // because nothing else on this side will ever mention it.
+            if ($rejected !== []) {
+                Log::warning('AI Bridge: bridge dropped env keys it does not allow', [
+                    'connection_id' => $connectionId,
+                    'request_id' => $requestId,
+                    'env_rejected' => $rejected,
+                ]);
+            }
+
+            Log::debug('AI Bridge: bridge session defaults', [
+                'connection_id' => $connectionId,
+                'request_id' => $requestId,
+                'prompt_mode' => $session['prompt_mode'] ?? null,
+                'prompt_server_text' => $session['prompt_server_text'] ?? null,
+                'env_overridden' => $session['env_overridden'] ?? [],
+            ]);
+        }
+
         return null;
     }
 
