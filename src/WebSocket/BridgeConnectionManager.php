@@ -52,6 +52,17 @@ class BridgeConnectionManager
     private array $pendingRequests = [];
 
     /**
+     * Usage questions waiting on an answer, keyed by the id that was sent.
+     *
+     * Lives beside the pending stream requests because it is the same kind of thing: state
+     * about an in-flight exchange that only the serve process can see. Each entry is the
+     * callable that finishes the HTTP response the asker is holding open.
+     *
+     * @var array<string, callable(array<string, mixed>): void>
+     */
+    private array $pendingUsage = [];
+
+    /**
      * Callback for sending messages over the WebSocket connection.
      * Set by the consuming app's WebSocket server integration.
      *
@@ -403,6 +414,45 @@ class BridgeConnectionManager
             'stream_handler' => $handler,
             'user_id' => $userId,
         ];
+    }
+
+    /**
+     * Note that a usage question is out, and how to finish when it comes back.
+     *
+     * @param  callable(array<string, mixed>): void  $onAnswer
+     */
+    public function registerPendingUsage(string $requestId, callable $onAnswer): void
+    {
+        $this->pendingUsage[$requestId] = $onAnswer;
+    }
+
+    /**
+     * Hand an answer to whoever is waiting for it, and forget the question.
+     *
+     * Answers at most once: a second reply for the same id (a confused bridge, or a reply
+     * that raced the timeout) is dropped rather than writing to a closed response.
+     *
+     * @param  array<string, mixed>  $answer
+     */
+    public function resolvePendingUsage(string $requestId, array $answer): bool
+    {
+        $onAnswer = $this->pendingUsage[$requestId] ?? null;
+
+        if ($onAnswer === null) {
+            return false;
+        }
+
+        unset($this->pendingUsage[$requestId]);
+
+        $onAnswer($answer);
+
+        return true;
+    }
+
+    /** Give up on a usage question (the bridge never answered). */
+    public function forgetPendingUsage(string $requestId): void
+    {
+        unset($this->pendingUsage[$requestId]);
     }
 
     /**

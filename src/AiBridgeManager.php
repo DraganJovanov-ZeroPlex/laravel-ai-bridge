@@ -9,10 +9,12 @@ use InvalidArgumentException;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Tetrix\AiBridge\Auth\TokenManager;
+use Tetrix\AiBridge\Connections\ConnectionStatus;
 use Tetrix\AiBridge\Contracts\StreamableProvider;
 use Tetrix\AiBridge\Contracts\StreamStoreContract;
 use Tetrix\AiBridge\Contracts\ToolHandler;
 use Tetrix\AiBridge\Enums\ProviderMode;
+use Tetrix\AiBridge\Models\Connection;
 use Tetrix\AiBridge\Models\Conversation;
 use Tetrix\AiBridge\Models\Message;
 use Tetrix\AiBridge\Protocol\MessageTypes;
@@ -141,6 +143,31 @@ class AiBridgeManager
     /**
      * Check if a user has an active bridge connection.
      */
+    /**
+     * What is left of the subscription the bridge for this connection is signed in as.
+     *
+     * Asks the machine and returns figures only: the credential that answers this lives on
+     * that machine and is never sent here, which is why the bridge does the asking.
+     *
+     * @return array{ok: bool, limits?: array<int, array<string, mixed>>, reason?: string}
+     *                                 Each limit carries `label` and `percent`, plus
+     *                                 `resets_at`, `kind` and `group` when the CLI reports
+     *                                 them. On failure, `reason` is `not_connected`,
+     *                                 `unsupported`, `no_credential` or `failed`.
+     */
+    public function usage(int|string $connectionKey): array
+    {
+        $connection = Connection::query()
+            ->where('connection_key', (string) $connectionKey)
+            ->first();
+
+        if (! $connection instanceof Connection) {
+            return ['ok' => false, 'reason' => 'not_connected'];
+        }
+
+        return app(ConnectionStatus::class)->usage($connection);
+    }
+
     public function hasBridge(int|string $userId): bool
     {
         return $this->connectionManager->hasConnection($userId);

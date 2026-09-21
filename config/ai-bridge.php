@@ -138,6 +138,11 @@ return [
         'port' => env('AI_BRIDGE_SERVER_PORT', 8085),
         'relay_timeout' => env('AI_BRIDGE_RELAY_TIMEOUT', 5), // seconds for internal HTTP relay
 
+        // How long the serve process holds a usage question open before answering that the
+        // bridge did not reply. Longer than relay_timeout because this one waits on a round
+        // trip to the machine AND the machine's own call to its vendor, not just on us.
+        'usage_timeout' => env('AI_BRIDGE_USAGE_TIMEOUT', 12), // seconds
+
         // URL for internal relay requests (PHP-FPM → bridge server communication).
         // Override to use HTTPS if the bridge server is behind a TLS-terminating proxy.
         // Security: When running the bridge server on a separate host, use HTTPS to

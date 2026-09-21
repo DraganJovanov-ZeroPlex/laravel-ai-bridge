@@ -196,6 +196,71 @@ class ConnectionStatus
         ]];
     }
 
+    /**
+     * What is left of the subscription the bridge on this connection is signed in as.
+     *
+     * Asked live and never cached, unlike the rest of this class. The other fields here are a
+     * snapshot worth keeping when the serve process cannot be reached; an allowance figure is
+     * not — one from an hour ago is worse than none, because it reads as current.
+     *
+     * Nothing is stored for the same reason, so there is no `last_usage` column to match
+     * `last_posture`. That absence is deliberate.
+     *
+     * @return array{ok: bool, limits?: array<int, array<string, mixed>>, reason?: string}
+     *                                 `reason` is `not_connected`, `unsupported`,
+     *                                 `no_credential` or `failed`.
+     */
+    public function usage(Connection $connection): array
+    {
+        try {
+            $relayToken = $this->tokenManager->generate(
+                $connection->connection_key,
+                ['scope' => TokenManager::INTERNAL_RELAY_SCOPE],
+                60,
+            );
+
+            // The serve process holds the question open while the bridge answers, so this
+            // waits longer than the ordinary relay calls do.
+            $timeout = (int) config('ai-bridge.server.usage_timeout', 12) + 3;
+
+            $response = Http::withToken($relayToken)
+                ->timeout($timeout)
+                ->acceptJson()
+                ->get($this->internalApiBase().'/api/usage');
+        } catch (\Throwable $e) {
+            Log::info('AI Bridge: could not reach the serve process for usage', [
+                'connection_id' => $connection->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['ok' => false, 'reason' => 'failed'];
+        }
+
+        if ($response->status() === 404) {
+            return ['ok' => false, 'reason' => 'not_connected'];
+        }
+
+        // A bridge that never answered is reported as unable to answer, which is what it is
+        // from the asker's side and covers both an old bridge and a wedged one.
+        if ($response->status() === 504) {
+            return ['ok' => false, 'reason' => 'unsupported'];
+        }
+
+        if (! $response->successful()) {
+            return ['ok' => false, 'reason' => 'failed'];
+        }
+
+        $limits = $response->json('limits');
+
+        if ($response->json('ok') === true && is_array($limits) && $limits !== []) {
+            return ['ok' => true, 'limits' => array_values($limits)];
+        }
+
+        $reason = $response->json('reason');
+
+        return ['ok' => false, 'reason' => is_string($reason) && $reason !== '' ? $reason : 'failed'];
+    }
+
     private function internalApiBase(): string
     {
         $relayUrl = config('ai-bridge.server.relay_url');

@@ -115,6 +115,7 @@ class MessageHandler
             MessageTypes::PING => $this->handlePing($connectionId, $message),
             MessageTypes::AI_REQUEST_ACK => $this->handleAiRequestAck($connectionId, $message),
             MessageTypes::POSTURE => $this->handlePosture($connectionId, $message),
+            MessageTypes::USAGE_RESULT => $this->handleUsageResult($connectionId, $message),
             MessageTypes::STREAM => $this->handleStreamEnvelope($connectionId, $message),
             MessageTypes::TOOL_CALL => $this->handleToolCall($connectionId, $message),
             MessageTypes::ERROR => $this->handleError($connectionId, $message),
@@ -234,6 +235,80 @@ class MessageHandler
      *
      * @param  array<string, mixed>  $message
      */
+    /**
+     * The allowance figures a bridge was asked for, handed to whoever is waiting.
+     *
+     * Shaped like handlePosture(): resolve the user first and bail if the handshake never
+     * completed, then type-check every field. A TypeError inside a ReactPHP data callback
+     * takes the whole serve process down, so a malformed frame must be dropped rather than
+     * trusted.
+     *
+     * Returns null: the answer goes to the waiting HTTP response, not back to the bridge.
+     */
+    private function handleUsageResult(string $connectionId, array $message): ?array
+    {
+        $userId = $this->connectionManager->getUserIdByConnectionId($connectionId);
+
+        if ($userId === null) {
+            Log::warning('AI Bridge: usage_result from unauthenticated connection', [
+                'connection_id' => $connectionId,
+            ]);
+
+            return null;
+        }
+
+        $requestId = $message['id'] ?? null;
+
+        if (! is_string($requestId) || $requestId === '') {
+            Log::warning('AI Bridge: usage_result without an id', [
+                'connection_id' => $connectionId,
+            ]);
+
+            return null;
+        }
+
+        $limits = [];
+
+        foreach (is_array($message['limits'] ?? null) ? $message['limits'] : [] as $limit) {
+            if (! is_array($limit)) {
+                continue;
+            }
+
+            $label = $limit['label'] ?? null;
+            $percent = $limit['percent'] ?? null;
+
+            // A row needs a name and a figure to mean anything. A partial row is worse than
+            // an absent one: a bar with no label cannot be read.
+            if (! is_string($label) || $label === '' || ! is_numeric($percent)) {
+                continue;
+            }
+
+            $row = [
+                'label' => $label,
+                'percent' => (int) round(max(0, min(100, (float) $percent))),
+            ];
+
+            foreach (['resets_at', 'kind', 'group'] as $field) {
+                if (is_string($limit[$field] ?? null) && $limit[$field] !== '') {
+                    $row[$field] = $limit[$field];
+                }
+            }
+
+            $limits[] = $row;
+        }
+
+        $reason = is_string($message['reason'] ?? null) ? $message['reason'] : null;
+        $ok = ($message['ok'] ?? null) === true && $limits !== [];
+
+        $this->connectionManager->resolvePendingUsage($requestId, $ok
+            ? ['ok' => true, 'limits' => $limits]
+            // A bridge that said ok but sent nothing usable is not the same as one reporting
+            // an empty allowance, and must not be presented as "nothing used".
+            : ['ok' => false, 'reason' => $reason ?? 'failed']);
+
+        return null;
+    }
+
     private function handlePosture(string $connectionId, array $message): ?array
     {
         $userId = $this->connectionManager->getUserIdByConnectionId($connectionId);
