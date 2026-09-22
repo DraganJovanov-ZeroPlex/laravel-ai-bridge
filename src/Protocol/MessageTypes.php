@@ -130,6 +130,28 @@ final class MessageTypes
     public const POSTURE = 'posture';
 
     /**
+     * Server → bridge: asks what is left of the subscription its CLI is signed in as.
+     *
+     * Carries nothing but an `id`. The bridge already knows which CLI it runs and holds the
+     * only credential that could answer, so there is nothing for the server to tell it, and
+     * the server deliberately never sees that credential.
+     *
+     * Answered by exactly one USAGE_RESULT echoing the id.
+     */
+    public const USAGE_REQUEST = 'usage_request';
+
+    /**
+     * Bridge → server: the allowance figures, or why there are none.
+     *
+     * The bridge answers EVERY usage_request, including one it cannot help with: an
+     * unanswered request is indistinguishable from a bridge too old to know the frame, and
+     * the server could only tell them apart by waiting out a timeout.
+     *
+     * Absence of this type in a bridge's vocabulary means an older bridge, not a refusal.
+     */
+    public const USAGE_RESULT = 'usage_result';
+
+    /**
      * Server → bridge: sends the result of a tool execution back to the bridge.
      *
      * This is a top-level message type (NOT inside a stream envelope).
@@ -193,6 +215,8 @@ final class MessageTypes
             self::RATE_LIMIT,
             self::ATTACHMENT,
             self::POSTURE,
+            self::USAGE_REQUEST,
+            self::USAGE_RESULT,
             self::TOOL_RESOLVE,
             self::TOOL_ERROR,
             self::DONE,
@@ -230,6 +254,7 @@ final class MessageTypes
             self::HELLO,
             self::PROVIDERS_UPDATE,
             self::POSTURE,
+            self::USAGE_RESULT,
             self::PING,
             self::AI_REQUEST_ACK,
             self::STREAM,
@@ -264,6 +289,7 @@ final class MessageTypes
             self::SESSION_RESET,
             self::TOOL_RESOLVE,
             self::TOOL_ERROR,
+            self::USAGE_REQUEST,
             self::CANCEL,
         ];
     }

@@ -450,12 +450,108 @@ class BridgeWebSocketServer
         match (true) {
             $method === 'GET' && $path === '/api/status' => $this->apiStatus($tcpConnection, $decoded),
             $method === 'POST' && $path === '/api/request' => $this->apiRequest($tcpConnection, $request, $decoded),
+            $method === 'GET' && $path === '/api/usage' => $this->apiUsage($tcpConnection, $request, $decoded),
             $method === 'POST' && $path === '/api/disconnect' => $this->apiDisconnect($tcpConnection, $decoded),
             default => $this->httpResponse($tcpConnection, 404, [
                 'error' => 'not_found',
                 'message' => "Unknown endpoint: {$method} {$path}",
             ]),
         };
+    }
+
+    /**
+     * Ask this user's bridge what is left of its subscription, and answer when it replies.
+     *
+     * The only endpoint here that waits on the bridge. It has to: the figures are no use
+     * cached, and the caller is a person who just opened a panel. So the response is held
+     * open, the frame goes out, and whichever happens first finishes it — the bridge's reply
+     * or the timeout.
+     *
+     * **The user is always the token's subject, never anything the caller sent**, exactly as
+     * in apiRequest(). A relay token is scoped to one connection and that is the connection
+     * it may ask about.
+     *
+     * A bridge too old to know the frame simply never answers, which is indistinguishable
+     * from one that is wedged, and both are the same answer to the person waiting: this
+     * machine cannot tell you. That is why there is no version negotiation here.
+     */
+    private function apiUsage(ConnectionInterface $tcpConnection, RequestInterface $request, object $decoded): void
+    {
+        $userId = (string) ($decoded->sub ?? '');
+
+        if ($userId === '') {
+            $this->httpResponse($tcpConnection, 400, [
+                'error' => 'missing_subject',
+                'message' => 'Token carries no subject.',
+            ]);
+
+            return;
+        }
+
+        if (! $this->connectionManager->hasConnection($userId)) {
+            $this->httpResponse($tcpConnection, 404, [
+                'error' => 'bridge_not_connected',
+                'message' => 'No bridge is connected for this user.',
+            ]);
+
+            return;
+        }
+
+        $requestId = 'usage-'.bin2hex(random_bytes(8));
+        $answered = false;
+
+        $this->connectionManager->registerPendingUsage(
+            $requestId,
+            $userId,
+            function (array $answer) use (&$answered, $tcpConnection): void {
+                if ($answered) {
+                    return;
+                }
+
+                $answered = true;
+                $this->httpResponse($tcpConnection, 200, $answer);
+            }
+        );
+
+        // Which CLI to report on. Optional, but a machine can have several installed and only
+        // the caller knows which one is answering the conversation; without it the bridge
+        // refuses to guess rather than label one subscription's figures as another's.
+        parse_str((string) $request->getUri()->getQuery(), $query);
+        $provider = isset($query['provider']) && is_string($query['provider']) ? $query['provider'] : null;
+
+        $sent = $this->connectionManager->sendToUser($userId, [
+            'type' => MessageTypes::USAGE_REQUEST,
+            'id' => $requestId,
+            ...($provider !== null && $provider !== '' ? ['provider' => $provider] : []),
+        ]);
+
+        if (! $sent) {
+            $this->connectionManager->forgetPendingUsage($requestId);
+            $this->httpResponse($tcpConnection, 500, [
+                'error' => 'send_failed',
+                'message' => 'Could not put the question to the bridge.',
+            ]);
+
+            return;
+        }
+
+        // Without this the response is held open forever by a bridge that will never reply,
+        // and the asker's own request eventually dies with no explanation.
+        $timeout = (float) config('ai-bridge.server.usage_timeout', 12);
+
+        $this->loop->addTimer($timeout, function () use ($requestId, &$answered, $tcpConnection): void {
+            $this->connectionManager->forgetPendingUsage($requestId);
+
+            if ($answered) {
+                return;
+            }
+
+            $answered = true;
+            $this->httpResponse($tcpConnection, 504, [
+                'error' => 'bridge_did_not_answer',
+                'message' => 'The bridge did not answer in time. It may be an older version that does not know the question.',
+            ]);
+        });
     }
 
     /**
@@ -693,7 +789,7 @@ class BridgeWebSocketServer
     {
         // 413 is included so the buffer-overflow guard in handleTcpConnection()
         // can use httpResponse() consistently.
-        $statusTexts = [200 => 'OK', 400 => 'Bad Request', 401 => 'Unauthorized', 404 => 'Not Found', 413 => 'Payload Too Large', 500 => 'Internal Server Error'];
+        $statusTexts = [200 => 'OK', 400 => 'Bad Request', 401 => 'Unauthorized', 404 => 'Not Found', 413 => 'Payload Too Large', 500 => 'Internal Server Error', 504 => 'Gateway Timeout'];
         $statusText = $statusTexts[$statusCode] ?? 'Unknown';
 
         $json = json_encode($data, JSON_UNESCAPED_SLASHES);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tetrix\AiBridge\WebSocket;
 
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Tetrix\AiBridge\Contracts\SendableConnection;
 use Tetrix\AiBridge\Events\BridgeConnected;
 use Tetrix\AiBridge\Events\BridgeDisconnected;
@@ -50,6 +51,23 @@ class BridgeConnectionManager
      * @var array<string, array{stream_handler: StreamHandler, user_id: string}>
      */
     private array $pendingRequests = [];
+
+    /**
+     * Usage questions waiting on an answer, keyed by the id that was sent.
+     *
+     * Lives beside the pending stream requests because it is the same kind of thing: state
+     * about an in-flight exchange that only the serve process can see. Each entry carries
+     * the callable that finishes the HTTP response the asker is holding open, and the user
+     * the question was asked on behalf of.
+     *
+     * The user id is not bookkeeping — it is the authorization check. Every bridge on this
+     * server shares one id space here, so without it any authenticated bridge that named
+     * another user's request id would answer that user's question. `pendingRequests` carries
+     * `user_id` for exactly this reason and filters on it; this must too.
+     *
+     * @var array<string, array{user_id: string, on_answer: callable(array<string, mixed>): void}>
+     */
+    private array $pendingUsage = [];
 
     /**
      * Callback for sending messages over the WebSocket connection.
@@ -406,6 +424,83 @@ class BridgeConnectionManager
     }
 
     /**
+     * Note that a usage question is out, and how to finish when it comes back.
+     *
+     * @param  string  $userId  The user the question is being asked on behalf of. Only that
+     *                          user's bridge may answer it.
+     * @param  callable(array<string, mixed>): void  $onAnswer
+     */
+    public function registerPendingUsage(string $requestId, string $userId, callable $onAnswer): void
+    {
+        $this->pendingUsage[$requestId] = [
+            'user_id' => $userId,
+            'on_answer' => $onAnswer,
+        ];
+    }
+
+    /**
+     * Hand an answer to whoever is waiting for it, and forget the question.
+     *
+     * Answers at most once: a second reply for the same id (a confused bridge, or a reply
+     * that raced the timeout) is dropped rather than writing to a closed response.
+     *
+     * The answering user must be the one the question was registered for. A random request
+     * id is not an authorization check — it is a secret, and secrets leak — so a frame from
+     * another user's bridge is refused here rather than relied upon not to arrive.
+     *
+     * @param  array<string, mixed>  $answer
+     */
+    public function resolvePendingUsage(string $requestId, string $userId, array $answer): bool
+    {
+        $pending = $this->pendingUsage[$requestId] ?? null;
+
+        if ($pending === null) {
+            return false;
+        }
+
+        if ($pending['user_id'] !== $userId) {
+            Log::warning('AI Bridge: usage_result for another user\'s question — refused', [
+                'request_id' => $requestId,
+                'answering_user' => $userId,
+            ]);
+
+            return false;
+        }
+
+        unset($this->pendingUsage[$requestId]);
+
+        ($pending['on_answer'])($answer);
+
+        return true;
+    }
+
+    /**
+     * Give up on every usage question outstanding for a user, and say why.
+     *
+     * Without this a question outstanding when the bridge drops is left to the timeout: the
+     * asker waits the full `usage_timeout` to be told nothing, when the answer — that the
+     * machine is gone — was already known the moment the socket closed.
+     */
+    private function failPendingUsageForUser(string $userId): void
+    {
+        foreach ($this->pendingUsage as $requestId => $pending) {
+            if ($pending['user_id'] !== $userId) {
+                continue;
+            }
+
+            unset($this->pendingUsage[$requestId]);
+
+            ($pending['on_answer'])(['ok' => false, 'reason' => 'not_connected']);
+        }
+    }
+
+    /** Give up on a usage question (the bridge never answered). */
+    public function forgetPendingUsage(string $requestId): void
+    {
+        unset($this->pendingUsage[$requestId]);
+    }
+
+    /**
      * Get the StreamHandler for a pending request.
      */
     public function getPendingRequest(string $requestId): ?StreamHandler
@@ -492,5 +587,9 @@ class BridgeConnectionManager
                 unset($this->pendingRequests[$requestId]);
             }
         }
+
+        // A usage question is an in-flight exchange for this user too, and it is held open
+        // by an HTTP response rather than a stream handler — so it needs its own sweep.
+        $this->failPendingUsageForUser($userId);
     }
 }
