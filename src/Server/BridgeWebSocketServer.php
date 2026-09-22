@@ -460,11 +460,6 @@ class BridgeWebSocketServer
     }
 
     /**
-     * GET /api/status — Return connection status for the authenticated user only.
-     *
-     * SEC: Only shows the requesting user's own connection data, not all users.
-     */
-    /**
      * Ask this user's bridge what is left of its subscription, and answer when it replies.
      *
      * The only endpoint here that waits on the bridge. It has to: the figures are no use
@@ -507,6 +502,7 @@ class BridgeWebSocketServer
 
         $this->connectionManager->registerPendingUsage(
             $requestId,
+            $userId,
             function (array $answer) use (&$answered, $tcpConnection): void {
                 if ($answered) {
                     return;
@@ -558,6 +554,11 @@ class BridgeWebSocketServer
         });
     }
 
+    /**
+     * GET /api/status — Return connection status for the authenticated user only.
+     *
+     * SEC: Only shows the requesting user's own connection data, not all users.
+     */
     private function apiStatus(ConnectionInterface $tcpConnection, object $decoded): void
     {
         $userId = (string) ($decoded->sub ?? '');

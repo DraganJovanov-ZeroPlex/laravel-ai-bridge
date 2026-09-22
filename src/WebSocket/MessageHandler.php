@@ -40,6 +40,14 @@ class MessageHandler
      */
     private array $recoveredRequests = [];
 
+    /**
+     * The `reason` values a `usage_result` may carry, per PROTOCOL.md.
+     *
+     * An allowlist rather than a passthrough: this is an enum the consuming application
+     * branches on, and a value it has never heard of is indistinguishable from a bug in it.
+     */
+    private const USAGE_REASONS = ['unsupported', 'no_credential', 'failed'];
+
     public function __construct(
         private readonly BridgeConnectionManager $connectionManager,
         private readonly TokenManager $tokenManager,
@@ -224,18 +232,6 @@ class MessageHandler
     }
 
     /**
-     * Handle a 'posture' message — the bridge reporting the CLI isolation it
-     * actually adopted for this connection.
-     *
-     * Recorded rather than acted on. The bridge is the authority: it has
-     * already decided, and a server cannot argue with a refusal that exists
-     * precisely to stop servers overriding the machine's owner. What this
-     * buys is that the app can SHOW it, so "the assistant has no tools" stops
-     * being a mystery only visible in a log on the operator's laptop.
-     *
-     * @param  array<string, mixed>  $message
-     */
-    /**
      * The allowance figures a bridge was asked for, handed to whoever is waiting.
      *
      * Shaped like handlePosture(): resolve the user first and bail if the handshake never
@@ -297,10 +293,17 @@ class MessageHandler
             $limits[] = $row;
         }
 
-        $reason = is_string($message['reason'] ?? null) ? $message['reason'] : null;
+        // `reason` reaches the application as an enum it will branch on and probably render,
+        // so only the documented values pass. Anything else — a newer bridge, a broken one —
+        // becomes `failed`, which is the honest summary of "it did not work and I cannot
+        // tell you more" and cannot surprise a `match` downstream.
+        $reason = is_string($message['reason'] ?? null)
+            && in_array($message['reason'], self::USAGE_REASONS, true)
+                ? $message['reason']
+                : null;
         $ok = ($message['ok'] ?? null) === true && $limits !== [];
 
-        $this->connectionManager->resolvePendingUsage($requestId, $ok
+        $this->connectionManager->resolvePendingUsage($requestId, $userId, $ok
             ? ['ok' => true, 'limits' => $limits]
             // A bridge that said ok but sent nothing usable is not the same as one reporting
             // an empty allowance, and must not be presented as "nothing used".
@@ -309,6 +312,18 @@ class MessageHandler
         return null;
     }
 
+    /**
+     * Handle a 'posture' message — the bridge reporting the CLI isolation it
+     * actually adopted for this connection.
+     *
+     * Recorded rather than acted on. The bridge is the authority: it has
+     * already decided, and a server cannot argue with a refusal that exists
+     * precisely to stop servers overriding the machine's owner. What this
+     * buys is that the app can SHOW it, so "the assistant has no tools" stops
+     * being a mystery only visible in a log on the operator's laptop.
+     *
+     * @param  array<string, mixed>  $message
+     */
     private function handlePosture(string $connectionId, array $message): ?array
     {
         $userId = $this->connectionManager->getUserIdByConnectionId($connectionId);

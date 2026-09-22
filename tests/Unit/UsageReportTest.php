@@ -62,7 +62,7 @@ function deliverUsage(BridgeConnectionManager $manager, array $frame, string $id
 {
     $answer = null;
 
-    $manager->registerPendingUsage($id, function (array $a) use (&$answer): void {
+    $manager->registerPendingUsage($id, 'user-1', function (array $a) use (&$answer): void {
         $answer = $a;
     });
 
@@ -158,7 +158,7 @@ it('answers a waiter exactly once, so a duplicate reply cannot write twice', fun
     $manager = usageManager();
     $calls = 0;
 
-    $manager->registerPendingUsage('usage-dup', function () use (&$calls): void {
+    $manager->registerPendingUsage('usage-dup', 'user-1', function () use (&$calls): void {
         $calls++;
     });
 
@@ -202,7 +202,7 @@ it('ignores a frame from a connection that never completed the handshake', funct
     $manager = new BridgeConnectionManager();
     $calls = 0;
 
-    $manager->registerPendingUsage('usage-1', function () use (&$calls): void {
+    $manager->registerPendingUsage('usage-1', 'user-1', function () use (&$calls): void {
         $calls++;
     });
 
@@ -219,7 +219,7 @@ it('ignores a frame from a connection that never completed the handshake', funct
 it('resolving an answer nobody is waiting for is harmless', function () {
     $manager = usageManager();
 
-    expect($manager->resolvePendingUsage('never-asked', ['ok' => true]))->toBeFalse();
+    expect($manager->resolvePendingUsage('never-asked', 'user-1', ['ok' => true]))->toBeFalse();
 });
 
 it('reports a bridge that is not connected, without waiting on it', function () {
@@ -240,9 +240,13 @@ it('reports a bridge that is not connected, without waiting on it', function () 
         ->toBe(['ok' => false, 'reason' => 'not_connected']);
 });
 
-it('reports a bridge that never answered as unable to answer', function () {
-    // Covers an older bridge that does not know the frame AND one that is simply wedged.
-    // From the asker's side these are the same fact, which is why there is no version check.
+it('reports a bridge that never answered as failed, not unsupported', function () {
+    // Covers an older bridge that does not know the frame AND one that is simply wedged or
+    // has just dropped. These are NOT the same fact to the reader, which is the whole point:
+    // `unsupported` means "this CLI has no such notion" — permanent, nothing to retry —
+    // while a bridge that timed out may well answer the same question a minute later.
+    // Reporting the retryable case as the permanent one is the more expensive way to be
+    // wrong, because a screen showing it has no reason to ask again.
     Http::fake(['*/api/usage' => Http::response(['error' => 'bridge_did_not_answer'], 504)]);
 
     $connection = Connection::create([
@@ -252,7 +256,7 @@ it('reports a bridge that never answered as unable to answer', function () {
     ]);
 
     expect(app(ConnectionStatus::class)->usage($connection))
-        ->toBe(['ok' => false, 'reason' => 'unsupported']);
+        ->toBe(['ok' => false, 'reason' => 'failed']);
 });
 
 it('surfaces the figures through the connection read path', function () {
@@ -291,4 +295,93 @@ it('stores nothing about usage on the connection', function () {
     app(ConnectionStatus::class)->usage($connection);
 
     expect(array_keys($connection->fresh()->getAttributes()))->not->toContain('last_usage');
+});
+
+// --- ownership: a request id is a secret, not an authorization check ---
+
+it('refuses a usage_result from a different user, even with the right id', function () {
+    // The attack this closes: every bridge on this server shares one id space for pending
+    // questions. Before, resolvePendingUsage() keyed on the wire-supplied id alone, so any
+    // authenticated bridge naming another user's request id answered that user's question
+    // with figures of its choosing. The id being 64 bits of random_bytes made that hard,
+    // not impossible — and secrecy of an identifier is not an access control.
+    $manager = usageManager();
+
+    $answer = null;
+    $manager->registerPendingUsage('usage-secret', 'user-1', function (array $a) use (&$answer): void {
+        $answer = $a;
+    });
+
+    // A second bridge, properly authenticated, as somebody else.
+    $token = app(TokenManager::class)->generate('user-2');
+    usageHandler($manager)->handleMessage('conn-2', null, json_encode([
+        'type' => MessageTypes::HELLO,
+        'version' => '0.1',
+        'token' => $token,
+        'providers' => [],
+    ]));
+
+    usageHandler($manager)->handleMessage('conn-2', null, json_encode([
+        'type' => MessageTypes::USAGE_RESULT,
+        'id' => 'usage-secret',
+        'ok' => true,
+        'limits' => [['label' => 'Fabricated', 'percent' => 3]],
+    ]));
+
+    expect($answer)->toBeNull();
+
+    // And the question is still open for the user who actually asked it.
+    expect($manager->resolvePendingUsage('usage-secret', 'user-1', ['ok' => true]))->toBeTrue();
+});
+
+it('does not leave a waiter hanging when the bridge disconnects', function () {
+    // Otherwise the asker waits out the full usage_timeout to be told nothing, when the
+    // answer — the machine is gone — was known the moment the socket closed.
+    $manager = usageManager();
+
+    $answer = null;
+    $manager->registerPendingUsage('usage-dropped', 'user-1', function (array $a) use (&$answer): void {
+        $answer = $a;
+    });
+
+    $manager->removeConnection('user-1', 'bridge_disconnected');
+
+    expect($answer)->toBe(['ok' => false, 'reason' => 'not_connected']);
+});
+
+it('sweeps only the disconnecting user’s questions', function () {
+    $manager = usageManager();
+
+    $mine = null;
+    $theirs = null;
+    $manager->registerPendingUsage('usage-mine', 'user-1', function (array $a) use (&$mine): void {
+        $mine = $a;
+    });
+    $manager->registerPendingUsage('usage-theirs', 'user-2', function (array $a) use (&$theirs): void {
+        $theirs = $a;
+    });
+
+    $manager->removeConnection('user-1', 'bridge_disconnected');
+
+    expect($mine)->toBe(['ok' => false, 'reason' => 'not_connected']);
+    expect($theirs)->toBeNull();
+});
+
+it('does not pass an unknown reason through to the application', function () {
+    // `reason` is an enum the app branches on and renders. A value it has never heard of is
+    // indistinguishable from a bug in the app, so anything off the documented list becomes
+    // `failed` — the honest summary of "it did not work and I cannot tell you more".
+    $answer = deliverUsage(usageManager(), [
+        'ok' => false,
+        'reason' => 'teapot',
+    ]);
+
+    expect($answer)->toBe(['ok' => false, 'reason' => 'failed']);
+});
+
+it('still passes the documented reasons through untouched', function () {
+    foreach (['unsupported', 'no_credential', 'failed'] as $reason) {
+        expect(deliverUsage(usageManager(), ['ok' => false, 'reason' => $reason]))
+            ->toBe(['ok' => false, 'reason' => $reason]);
+    }
 });

@@ -141,13 +141,17 @@ class AiBridgeManager
     }
 
     /**
-     * Check if a user has an active bridge connection.
-     */
-    /**
      * What is left of the subscription the bridge for this connection is signed in as.
      *
      * Asks the machine and returns figures only: the credential that answers this lives on
      * that machine and is never sent here, which is why the bridge does the asking.
+     *
+     * Takes a Connection the caller has already fetched, NOT a key to look up. An earlier
+     * shape took `connection_key` and resolved it with an unscoped query, which made the
+     * obvious consuming route — `Route::get('/usage/{key}', fn ($key) => AiBridge::usage($key))`
+     * — read any user's figures. Every other path into ConnectionStatus goes through the
+     * app's own `connectionsQuery()` scope; this now cannot skip it, because authorising the
+     * lookup is the caller's job and a signature that accepts a bare key invites forgetting.
      *
      * @return array{ok: bool, limits?: array<int, array<string, mixed>>, reason?: string}
      *                                 Each limit carries `label` and `percent`, plus
@@ -155,19 +159,14 @@ class AiBridgeManager
      *                                 them. On failure, `reason` is `not_connected`,
      *                                 `unsupported`, `no_credential` or `failed`.
      */
-    public function usage(int|string $connectionKey, ?string $provider = null): array
+    public function usage(Connection $connection, ?string $provider = null): array
     {
-        $connection = Connection::query()
-            ->where('connection_key', (string) $connectionKey)
-            ->first();
-
-        if (! $connection instanceof Connection) {
-            return ['ok' => false, 'reason' => 'not_connected'];
-        }
-
         return app(ConnectionStatus::class)->usage($connection, $provider);
     }
 
+    /**
+     * Check if a user has an active bridge connection.
+     */
     public function hasBridge(int|string $userId): bool
     {
         return $this->connectionManager->hasConnection($userId);

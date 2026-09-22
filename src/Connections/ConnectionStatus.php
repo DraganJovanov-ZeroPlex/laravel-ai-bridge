@@ -240,10 +240,17 @@ class ConnectionStatus
             return ['ok' => false, 'reason' => 'not_connected'];
         }
 
-        // A bridge that never answered is reported as unable to answer, which is what it is
-        // from the asker's side and covers both an old bridge and a wedged one.
+        // A bridge that never answered is reported as `failed`, NOT `unsupported`.
+        //
+        // The two look alike from here and are opposites to the reader. `unsupported` means
+        // "this CLI has no such notion" — a permanent fact, and a screen showing it has no
+        // reason to ask again. A bridge that was slow, wedged, or had just dropped is a
+        // `failed`: the same question a minute later may well answer. Reporting the
+        // retryable case as the permanent one is the more expensive way to be wrong, and an
+        // old bridge that genuinely does not know the frame reaches the same screen a turn
+        // later by a different route anyway.
         if ($response->status() === 504) {
-            return ['ok' => false, 'reason' => 'unsupported'];
+            return ['ok' => false, 'reason' => 'failed'];
         }
 
         if (! $response->successful()) {
