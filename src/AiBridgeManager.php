@@ -155,7 +155,7 @@ class AiBridgeManager
      *                                 them. On failure, `reason` is `not_connected`,
      *                                 `unsupported`, `no_credential` or `failed`.
      */
-    public function usage(int|string $connectionKey): array
+    public function usage(int|string $connectionKey, ?string $provider = null): array
     {
         $connection = Connection::query()
             ->where('connection_key', (string) $connectionKey)
@@ -165,7 +165,7 @@ class AiBridgeManager
             return ['ok' => false, 'reason' => 'not_connected'];
         }
 
-        return app(ConnectionStatus::class)->usage($connection);
+        return app(ConnectionStatus::class)->usage($connection, $provider);
     }
 
     public function hasBridge(int|string $userId): bool

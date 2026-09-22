@@ -210,7 +210,7 @@ class ConnectionStatus
      *                                 `reason` is `not_connected`, `unsupported`,
      *                                 `no_credential` or `failed`.
      */
-    public function usage(Connection $connection): array
+    public function usage(Connection $connection, ?string $provider = null): array
     {
         try {
             $relayToken = $this->tokenManager->generate(
@@ -226,7 +226,7 @@ class ConnectionStatus
             $response = Http::withToken($relayToken)
                 ->timeout($timeout)
                 ->acceptJson()
-                ->get($this->internalApiBase().'/api/usage');
+                ->get($this->internalApiBase().'/api/usage', $provider !== null && $provider !== '' ? ['provider' => $provider] : []);
         } catch (\Throwable $e) {
             Log::info('AI Bridge: could not reach the serve process for usage', [
                 'connection_id' => $connection->id,

@@ -450,7 +450,7 @@ class BridgeWebSocketServer
         match (true) {
             $method === 'GET' && $path === '/api/status' => $this->apiStatus($tcpConnection, $decoded),
             $method === 'POST' && $path === '/api/request' => $this->apiRequest($tcpConnection, $request, $decoded),
-            $method === 'GET' && $path === '/api/usage' => $this->apiUsage($tcpConnection, $decoded),
+            $method === 'GET' && $path === '/api/usage' => $this->apiUsage($tcpConnection, $request, $decoded),
             $method === 'POST' && $path === '/api/disconnect' => $this->apiDisconnect($tcpConnection, $decoded),
             default => $this->httpResponse($tcpConnection, 404, [
                 'error' => 'not_found',
@@ -480,7 +480,7 @@ class BridgeWebSocketServer
      * from one that is wedged, and both are the same answer to the person waiting: this
      * machine cannot tell you. That is why there is no version negotiation here.
      */
-    private function apiUsage(ConnectionInterface $tcpConnection, object $decoded): void
+    private function apiUsage(ConnectionInterface $tcpConnection, RequestInterface $request, object $decoded): void
     {
         $userId = (string) ($decoded->sub ?? '');
 
@@ -517,9 +517,16 @@ class BridgeWebSocketServer
             }
         );
 
+        // Which CLI to report on. Optional, but a machine can have several installed and only
+        // the caller knows which one is answering the conversation; without it the bridge
+        // refuses to guess rather than label one subscription's figures as another's.
+        parse_str((string) $request->getUri()->getQuery(), $query);
+        $provider = isset($query['provider']) && is_string($query['provider']) ? $query['provider'] : null;
+
         $sent = $this->connectionManager->sendToUser($userId, [
             'type' => MessageTypes::USAGE_REQUEST,
             'id' => $requestId,
+            ...($provider !== null && $provider !== '' ? ['provider' => $provider] : []),
         ]);
 
         if (! $sent) {
