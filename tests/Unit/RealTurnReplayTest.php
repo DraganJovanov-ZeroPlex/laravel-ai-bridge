@@ -161,6 +161,11 @@ test('a captured background-helper turn records whose call was whose', function 
 
     expect(collect($blocks)->where('type', 'tool_result'))->toHaveCount(0);
 
+    // The helper's closing prose is not stored as a text block of the main
+    // assistant's: only the main assistant's own two replies are.
+    expect(collect($blocks)->where('type', 'text')->pluck('text')->all())
+        ->toBe(['Helper started in the background.', 'The background helper finished and printed "helper-done".']);
+
     // Every task event arrived, untouched and in order: the helper, the shell
     // command it ran as a task of its own, and the helper's end.
     $taskFrames = collect($frames)->where('event', MessageTypes::TASK)->pluck('data')->values()->all();
