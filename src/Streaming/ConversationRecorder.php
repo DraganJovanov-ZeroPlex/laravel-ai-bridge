@@ -231,6 +231,14 @@ final class ConversationRecorder
                 if (isset($event->data['tool_call_id']) && is_string($event->data['tool_call_id'])) {
                     $current['tool_call_id'] = $event->data['tool_call_id'];
                 }
+                // Which helper made the call, so a reload can still nest it
+                // under that helper instead of showing it as the main
+                // assistant's. Only when present: absent means the main
+                // assistant, and every turn recorded before this reads so.
+                $parent = $event->data['parent_tool_use_id'] ?? null;
+                if (is_string($parent) && $parent !== '') {
+                    $current['parent_tool_use_id'] = $parent;
+                }
 
                 return;
             }
